@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python main.py)",
+      "Bash(pip install *)",
+      "Bash(pip show *)",
+      "Bash(python -c \"from ui import MainWindow; print\\('import ok'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(cmd.exe //c \"d:\\\\\\\\zdh-dsp\\\\\\\\ollama-setup.exe\")",
+      "WebSearch",
+      "Bash(tasklist)"
+    ]
+  }
+}
