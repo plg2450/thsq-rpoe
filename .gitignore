@@ -24,6 +24,13 @@ Thumbs.db
 
 # 测试文件
 test_*.png
+test_*.py
+
+# 临时输出文件
+*_result.txt
+funasr_result.txt
+polish_result.txt
+recognition_result.txt
 
 # Claude
 .agents/

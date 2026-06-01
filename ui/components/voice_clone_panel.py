@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QThread, QUrl
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QAudioInput, QMediaRecorder, QMediaCaptureSession
 
+from config import GENERATED_DIR, VOICE_PROFILES_DIR
 from ..dialogs import show_warning, show_question, show_error, show_info, ask_text
 
 from .slider_control import SliderControl
@@ -249,10 +250,7 @@ class VoiceClonePanel(QWidget):
         self._is_recording = False
         self._voices = []
         self._active_voice_idx = -1
-        self._voice_profiles_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            'data', 'voice_profiles'
-        )
+        self._voice_profiles_dir = VOICE_PROFILES_DIR
         self._setup_ui()
         self._setup_recorder()
         self._load_existing_voices()
@@ -510,9 +508,7 @@ class VoiceClonePanel(QWidget):
             self._start_recording()
 
     def _start_recording(self):
-        output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'generated')
-        os.makedirs(output_dir, exist_ok=True)
-        self._record_path = os.path.join(output_dir, f'recording_{uuid.uuid4().hex[:8]}.wav')
+        self._record_path = os.path.join(GENERATED_DIR, f'recording_{uuid.uuid4().hex[:8]}.wav')
 
         self._recorder.setOutputLocation(QUrl.fromLocalFile(self._record_path))
         self._recorder.record()
@@ -708,8 +704,7 @@ class VoiceClonePanel(QWidget):
             audio_bytes = base64.b64decode(audio_data)
 
             # 保存到临时文件
-            temp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'generated')
-            os.makedirs(temp_dir, exist_ok=True)
+            temp_dir = GENERATED_DIR
 
             # 清理之前的临时文件
             if self._sample_audio_path and 'temp_sample_' in self._sample_audio_path:
@@ -865,9 +860,7 @@ class VoiceClonePanel(QWidget):
         self.generate_btn.setEnabled(False)
         self.generate_btn.setText("生成中...")
 
-        output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'generated')
-        os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, f'generated_{uuid.uuid4().hex[:8]}.wav')
+        output_path = os.path.join(GENERATED_DIR, f'generated_{uuid.uuid4().hex[:8]}.wav')
 
         speed = self.speed_slider.value()
         pitch = int(self.pitch_slider.value())

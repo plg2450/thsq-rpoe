@@ -15,9 +15,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 RESOURCES_DIR = os.path.join(BASE_DIR, "resources")
+GENERATED_DIR = os.path.join(DATA_DIR, "generated")
+VOICE_PROFILES_DIR = os.path.join(DATA_DIR, "voice_profiles")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
+os.makedirs(GENERATED_DIR, exist_ok=True)
+os.makedirs(VOICE_PROFILES_DIR, exist_ok=True)
 
 # MiMo API 配置（从环境变量读取，不再硬编码）
 MIMO_API_KEY = os.environ.get("MIMO_API_KEY", "")
