@@ -1,8 +1,8 @@
-"""唇形同步模块 - 使用 Wav2Lip"""
+"""唇形同步模块 - 使用 SadTalker"""
 
 import os
 import subprocess
-import tempfile
+import sys
 from config import FFMPEG_PATH, MODELS_DIR
 
 
@@ -10,20 +10,20 @@ class LipSyncer:
     """唇形同步处理器"""
 
     def __init__(self):
-        self.wav2lip_dir = os.path.join(MODELS_DIR, "Wav2Lip")
-        self.model_path = os.path.join(self.wav2lip_dir, "checkpoints", "wav2lip_gan.pth")
-        self.face_detection_dir = os.path.join(self.wav2lip_dir, "face_detection")
+        self.sadtalker_dir = os.path.join(MODELS_DIR, "SadTalker")
+        self.checkpoints_dir = os.path.join(self.sadtalker_dir, "checkpoints")
+        self.model_256 = os.path.join(self.checkpoints_dir, "SadTalker_V0.0.2_256.safetensors")
 
     def is_model_ready(self) -> bool:
         """检查模型是否已下载"""
-        return os.path.exists(self.model_path)
+        return os.path.exists(self.model_256)
 
     def sync(self, video_path: str, audio_path: str, output_path: str) -> str:
         """
-        执行唇形同步
+        使用 SadTalker 执行唇形同步
 
         参数:
-            video_path: 输入视频路径
+            video_path: 输入视频路径（需要有人脸）
             audio_path: 输入音频路径
             output_path: 输出视频路径
 
@@ -32,37 +32,50 @@ class LipSyncer:
         """
         if not self.is_model_ready():
             raise Exception(
-                f"Wav2Lip 模型未下载，请将 wav2lip_gan.pth 放到:\n"
-                f"{os.path.join(self.wav2lip_dir, 'checkpoints', '')}"
+                f"SadTalker 模型未下载，请运行下载脚本或手动下载模型到:\n"
+                f"{self.checkpoints_dir}"
             )
 
-        # 使用 Wav2Lip 的 inference.py
+        # 使用 SadTalker 的 inference.py
         cmd = [
-            "python",
-            os.path.join(self.wav2lip_dir, "inference.py",
-            "--checkpoint_path", self.model_path,
-            "--face", video_path,
-            "--audio", audio_path,
-            "--outfile", output_path,
-            "--nosmooth"  # 加速处理
+            sys.executable,
+            os.path.join(self.sadtalker_dir, "inference.py"),
+            "--driven_audio", audio_path,
+            "--source_image", video_path,
+            "--result_dir", os.path.dirname(output_path),
+            "--size", "256",
+            "--enhancer", "gfpgan",  # 使用人脸增强
+            "--still",  # 静态模式，减少头部运动
+            "--preprocess", "crop",  # 自动裁剪人脸
         ]
 
         # 设置环境变量
         env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = "0"  # 使用第一块GPU
+        env["CUDA_VISIBLE_DEVICES"] = "0"
 
         result = subprocess.run(
             cmd, capture_output=True, text=True,
             encoding='utf-8', errors='replace',
-            cwd=self.wav2lip_dir,
+            cwd=self.sadtalker_dir,
             env=env
         )
 
-        if not os.path.exists(output_path) or os.path.getsize(output_path) < 100:
-            error_msg = result.stderr[-500:] if result.stderr else "未知错误"
-            raise Exception(f"唇形同步失败: {error_msg}")
+        # SadTalker 会自动保存到 result_dir，查找最新的输出文件
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 100:
+            return output_path
 
-        return output_path
+        # 查找 result_dir 中最新的视频文件
+        result_dir = os.path.dirname(output_path)
+        video_files = [f for f in os.listdir(result_dir) if f.endswith('.mp4')]
+        if video_files:
+            latest = max(video_files, key=lambda f: os.path.getmtime(os.path.join(result_dir, f)))
+            latest_path = os.path.join(result_dir, latest)
+            if latest_path != output_path:
+                os.rename(latest_path, output_path)
+            return output_path
+
+        error_msg = result.stderr[-500:] if result.stderr else "未知错误"
+        raise Exception(f"唇形同步失败: {error_msg}")
 
     def sync_with_fallback(self, video_path: str, audio_path: str, output_path: str) -> str:
         """
