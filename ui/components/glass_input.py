@@ -6,20 +6,7 @@ class GlassInput(QLineEdit):
         super().__init__(parent)
         if placeholder:
             self.setPlaceholderText(placeholder)
-        self.setStyleSheet("""
-            QLineEdit {
-                background: #F5F5F8;
-                border: 1px solid rgba(0, 0, 0, 8);
-                border-radius: 10px;
-                padding: 10px 14px;
-                font-size: 13px;
-                color: #1A1A2E;
-            }
-            QLineEdit:focus {
-                border: 1px solid #7C6CEB;
-                background: #FFFFFF;
-            }
-        """)
+        self.setProperty("class", "glassInput")
 
 
 class GlassTextEdit(QTextEdit):
@@ -27,17 +14,4 @@ class GlassTextEdit(QTextEdit):
         super().__init__(parent)
         if placeholder:
             self.setPlaceholderText(placeholder)
-        self.setStyleSheet("""
-            QTextEdit {
-                background: #F5F5F8;
-                border: 1px solid rgba(0, 0, 0, 8);
-                border-radius: 12px;
-                padding: 12px;
-                font-size: 13px;
-                color: #1A1A2E;
-            }
-            QTextEdit:focus {
-                border: 1px solid #7C6CEB;
-                background: #FFFFFF;
-            }
-        """)
+        self.setProperty("class", "glassTextEdit")

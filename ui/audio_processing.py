@@ -141,7 +141,7 @@ class AudioProcessor:
 
         参数:
             audio_path: 输入音频路径
-            volume_percent: 音量百分比 (0 - 100)
+            volume_percent: 音量百分比 (0 - 200)
             output_path: 输出音频路径
         """
         if volume_percent == 100:
@@ -153,7 +153,7 @@ class AudioProcessor:
             audio = AudioSegment.from_file(audio_path)
 
             # 计算增益（dB）
-            # 100% = 0dB, 50% = -6dB, 0% = -inf
+            # 100% = 0dB, 50% = -6dB, 0% = -inf, 150% = +3.5dB, 200% = +6dB
             if volume_percent <= 0:
                 gain_db = -100  # 静音
             else:
@@ -186,7 +186,7 @@ class AudioProcessor:
             audio_path: 输入音频路径
             speed: 速度倍率 (0.5 - 2.0)
             pitch: 半音数 (-5 到 +5)
-            volume: 音量百分比 (0 - 100)
+            volume: 音量百分比 (0 - 200)
             output_path: 输出音频路径
         """
         if speed == 1.0 and pitch == 0 and volume == 100:
@@ -222,7 +222,7 @@ class AudioProcessor:
             if os.path.exists(temp_file) and temp_file != audio_path:
                 try:
                     os.remove(temp_file)
-                except:
+                except OSError:
                     pass
 
         return output_path

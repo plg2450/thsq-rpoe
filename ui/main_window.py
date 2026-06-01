@@ -1,20 +1,84 @@
-import sys
 import os
+import subprocess
+import shutil
+import uuid
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QFrame, QSizePolicy, QPushButton
+    QLabel, QFrame, QPushButton, QTextEdit, QLineEdit,
+    QFileDialog, QScrollArea, QSizePolicy, QProgressBar,
+    QSlider
 )
-from PySide6.QtCore import Qt, QPoint, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QUrl, QTimer
 from PySide6.QtGui import QFont
 
-from .components import (
-    GlassCard, GlassButton, GlassPrimaryButton,
-    GlassInput, GlassTextEdit, VideoPlayer,
-    VoiceClonePanel
-)
 from .styles import MAIN_STYLE
-from core import Downloader, Recognizer, Polisher, get_voice_cloner
+from .toast import show_toast
+from core import Downloader, Recognizer
+from config import DATA_DIR, FFMPEG_PATH
 
+# 文本保存目录
+TEXT_DIR = os.path.join(DATA_DIR, "text")
+os.makedirs(TEXT_DIR, exist_ok=True)
+
+try:
+    from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+    from PySide6.QtMultimediaWidgets import QVideoWidget
+    HAS_VIDEO = True
+except ImportError:
+    HAS_VIDEO = False
+
+from .components.voice_clone_panel import VoiceClonePanel
+
+
+# ========== 按钮样式 ==========
+
+GREEN_BTN = """
+    QPushButton {
+        background-color: #22c55e;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-size: 13px;
+        font-weight: 600;
+    }
+    QPushButton:hover { background-color: #16a34a; }
+    QPushButton:pressed { background-color: #15803d; }
+    QPushButton:disabled { background-color: #86efac; color: rgba(255,255,255,0.7); }
+"""
+
+BLACK_BTN = """
+    QPushButton {
+        background-color: #111111;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-size: 13px;
+        font-weight: 600;
+    }
+    QPushButton:hover { background-color: #333333; }
+    QPushButton:pressed { background-color: #000000; }
+    QPushButton:disabled { background-color: #666666; color: rgba(255,255,255,0.5); }
+"""
+
+DEFAULT_BTN = """
+    QPushButton {
+        background-color: #f5f5f5;
+        color: #333333;
+        border: 1px solid #e5e5e5;
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-size: 13px;
+        font-weight: 500;
+    }
+    QPushButton:hover { background-color: #ebebeb; border-color: #d5d5d5; }
+    QPushButton:pressed { background-color: #e0e0e0; border-color: #cccccc; }
+    QPushButton:disabled { background-color: #f9f9f9; color: #bbbbbb; border-color: #eeeeee; }
+"""
+
+
+# ========== 工作线程 ==========
 
 class DownloadWorker(QThread):
     finished = Signal(str)
@@ -60,6 +124,7 @@ class PolishWorker(QThread):
 
     def run(self):
         try:
+            from core.polisher import Polisher
             polisher = Polisher()
             result = polisher.polish(self.text)
             self.finished.emit(result)
@@ -67,258 +132,443 @@ class PolishWorker(QThread):
             self.error.emit(str(e))
 
 
+class VideoComposerWorker(QThread):
+    """用 ffmpeg 替换视频音轨（占位，未来接唇形同步模型）"""
+    finished = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, video_path: str, audio_path: str, output_path: str):
+        super().__init__()
+        self.video_path = video_path
+        self.audio_path = audio_path
+        self.output_path = output_path
+
+    def run(self):
+        try:
+            cmd = [
+                FFMPEG_PATH, "-y",
+                "-i", self.video_path,
+                "-i", self.audio_path,
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                self.output_path
+            ]
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding='utf-8', errors='replace'
+            )
+            if not os.path.exists(self.output_path) or os.path.getsize(self.output_path) < 100:
+                error_msg = result.stderr[-500:] if result.stderr else "未知错误"
+                raise Exception(f"合成失败: {error_msg}")
+            self.finished.emit(self.output_path)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+# ========== 主窗口 ==========
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setWindowTitle("口播助手")
-        self.setMinimumSize(1100, 680)
-        self.resize(1280, 780)
+        self.setWindowTitle("口播工作台")
+        self.setMinimumSize(1200, 700)
+        self.resize(1400, 800)
 
         self._drag_pos = None
         self._is_dragging = False
+        self._original_video_path = None
+        self._generated_audio_path = None
+        self._composed_video_path = None
 
         self.setStyleSheet(MAIN_STYLE)
 
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setContentsMargins(10, 10, 10, 10)
 
         # 背景容器
         self._bg = QWidget()
-        self._bg.setStyleSheet("""
-            QWidget {
-                background: #F5F5F8;
-                border-radius: 16px;
-            }
-        """)
+        self._bg.setObjectName("appBackground")
         bg_layout = QVBoxLayout(self._bg)
         bg_layout.setContentsMargins(0, 0, 0, 0)
         bg_layout.setSpacing(0)
         main_layout.addWidget(self._bg)
 
-        # ===== 自定义标题栏 =====
-        title_bar = self._create_title_bar()
+        # ===== 标题栏 =====
+        title_bar = QWidget()
+        title_bar.setObjectName("titleBar")
+        title_bar.setFixedHeight(44)
+        title_layout = QHBoxLayout(title_bar)
+        title_layout.setContentsMargins(20, 0, 16, 0)
+
+        title = QLabel("口播工作台")
+        title.setObjectName("titleLabel")
+        title_layout.addWidget(title)
+        title_layout.addStretch()
+
+        close_btn = QPushButton("x")
+        close_btn.setObjectName("closeBtn")
+        close_btn.clicked.connect(self.close)
+        title_layout.addWidget(close_btn)
         bg_layout.addWidget(title_bar)
 
         # ===== 三栏内容区 =====
         content = QWidget()
+        content.setStyleSheet("background: transparent;")
         content_layout = QHBoxLayout(content)
-        content_layout.setContentsMargins(24, 12, 24, 24)
-        content_layout.setSpacing(20)
+        content_layout.setContentsMargins(20, 16, 20, 16)
+        content_layout.setSpacing(16)
 
         # 左栏
-        left_col = self._create_left_column()
-        content_layout.addWidget(left_col, stretch=3)
+        content_layout.addWidget(self._create_left_panel(), stretch=1)
 
-        # 分割线
         sep1 = QFrame()
         sep1.setObjectName("separator")
         sep1.setFixedWidth(1)
         content_layout.addWidget(sep1)
 
         # 中栏
-        mid_col = self._create_mid_column()
-        content_layout.addWidget(mid_col, stretch=3)
+        content_layout.addWidget(self._create_center_panel(), stretch=1)
 
-        # 分割线
         sep2 = QFrame()
         sep2.setObjectName("separator")
         sep2.setFixedWidth(1)
         content_layout.addWidget(sep2)
 
         # 右栏
-        right_col = self._create_right_column()
-        content_layout.addWidget(right_col, stretch=4)
+        content_layout.addWidget(self._create_right_panel(), stretch=1)
 
         bg_layout.addWidget(content, stretch=1)
 
-    # ------------------------------------------------------------------ title bar
-    def _create_title_bar(self) -> QWidget:
-        bar = QWidget()
-        bar.setObjectName("titleBar")
-        bar.setFixedHeight(48)
-        bar_layout = QHBoxLayout(bar)
-        bar_layout.setContentsMargins(20, 0, 12, 0)
+    # ==================== 左栏 ====================
 
-        title = QLabel("🎬 口播助手")
-        title.setObjectName("titleLabel")
-        bar_layout.addWidget(title)
-        bar_layout.addStretch()
-
-        close_btn = QPushButton("×")
-        close_btn.setObjectName("closeBtn")
-        close_btn.clicked.connect(self.close)
-        bar_layout.addWidget(close_btn)
-
-        return bar
-
-    # ------------------------------------------------------------------ left column
-    def _create_left_column(self) -> QWidget:
-        col = QWidget()
-        layout = QVBoxLayout(col)
+    def _create_left_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setSpacing(10)
 
-        # 卡片1：粘贴链接
-        card1 = GlassCard("粘贴同行视频链接")
-        self.link_input = GlassInput("粘贴抖音/快手分享链接...")
-        card1.layout().addWidget(self.link_input)
+        title = QLabel("文案提取与润色")
+        title.setObjectName("panelTitle")
+        layout.addWidget(title)
 
+        layout.addSpacing(4)
+
+        # 输入框
+        self.link_input = QLineEdit()
+        self.link_input.setPlaceholderText("粘贴抖音视频分享链接...")
+        self.link_input.setFixedHeight(38)
+        layout.addWidget(self.link_input)
+
+        # 按钮行
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
-        self.extract_btn = GlassPrimaryButton("提取文案")
+        self.extract_btn = QPushButton("提取文案")
+        self.extract_btn.setStyleSheet(GREEN_BTN)
+        self.extract_btn.setFixedHeight(38)
+        self.extract_btn.setCursor(Qt.PointingHandCursor)
         self.extract_btn.clicked.connect(self._on_extract)
         btn_row.addWidget(self.extract_btn)
-        card1.layout().addLayout(btn_row)
-        layout.addWidget(card1)
 
-        # 卡片2：识别结果
-        card2 = GlassCard("识别文案")
-        self.recognized_text = GlassTextEdit("识别出的文字将显示在这里...")
-        self.recognized_text.setMinimumHeight(140)
-        card2.layout().addWidget(self.recognized_text)
-        layout.addWidget(card2)
+        clear_btn = QPushButton("清空")
+        clear_btn.setStyleSheet(DEFAULT_BTN)
+        clear_btn.setFixedHeight(38)
+        clear_btn.setCursor(Qt.PointingHandCursor)
+        clear_btn.clicked.connect(self._on_clear)
+        btn_row.addWidget(clear_btn)
+        layout.addLayout(btn_row)
 
-        # 卡片3：润色口稿
-        card3 = GlassCard("润色口稿")
-        self.polished_text = GlassTextEdit("润色后的口播稿将显示在这里...")
-        self.polished_text.setMinimumHeight(140)
-        card3.layout().addWidget(self.polished_text)
+        # 箭头
+        layout.addWidget(self._create_arrow())
 
-        polish_row = QHBoxLayout()
-        polish_row.setSpacing(8)
-        self.polish_btn = GlassButton("润色")
+        # 音频转文字
+        label1 = QLabel("音频转文字")
+        label1.setObjectName("sectionLabel")
+        layout.addWidget(label1)
+
+        self.recognized_text = QTextEdit()
+        self.recognized_text.setPlaceholderText("视频音频转换后的文字将显示在这里...")
+        self.recognized_text.setMinimumHeight(120)
+        layout.addWidget(self.recognized_text)
+
+        # 润色按钮
+        self.polish_btn = QPushButton("润色")
+        self.polish_btn.setStyleSheet(BLACK_BTN)
+        self.polish_btn.setFixedHeight(36)
+        self.polish_btn.setCursor(Qt.PointingHandCursor)
         self.polish_btn.clicked.connect(self._on_polish)
-        polish_row.addWidget(self.polish_btn)
-        polish_row.addStretch()
-        card3.layout().addLayout(polish_row)
-        layout.addWidget(card3)
+        layout.addWidget(self.polish_btn)
 
-        return col
+        # 箭头
+        layout.addWidget(self._create_arrow())
 
-    # ------------------------------------------------------------------ mid column
-    def _create_mid_column(self) -> QWidget:
-        col = QWidget()
-        layout = QVBoxLayout(col)
+        # 润色口稿
+        label2 = QLabel("润色口稿")
+        label2.setObjectName("sectionLabel")
+        layout.addWidget(label2)
+
+        self.polished_text = QTextEdit()
+        self.polished_text.setPlaceholderText("AI 润色后的口播稿将显示在这里...")
+        self.polished_text.setMinimumHeight(120)
+        self.polished_text.textChanged.connect(self._on_polished_text_changed)
+        layout.addWidget(self.polished_text)
+
+        return panel
+
+    # ==================== 中栏 ====================
+
+    def _create_center_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setSpacing(10)
 
-        # 声音克隆面板
-        self.voice_clone_panel = VoiceClonePanel()
-        self.voice_clone_panel.voice_ready.connect(self._on_voice_ready)
-        self.voice_clone_panel.speech_generated.connect(self._on_speech_generated)
-        layout.addWidget(self.voice_clone_panel)
+        title = QLabel("声音克隆与配音")
+        title.setObjectName("panelTitle")
+        layout.addWidget(title)
 
-        layout.addStretch()
+        layout.addSpacing(4)
 
-        return col
+        # 嵌入 VoiceClonePanel
+        self._voice_clone_panel = VoiceClonePanel()
+        self._voice_clone_panel.speech_generated.connect(self._on_speech_generated)
+        layout.addWidget(self._voice_clone_panel, stretch=1)
 
-    # ------------------------------------------------------------------ right column
-    def _create_right_column(self) -> QWidget:
-        col = QWidget()
-        layout = QVBoxLayout(col)
+        return panel
+
+    # ==================== 右栏 ====================
+
+    def _create_right_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setSpacing(10)
 
-        # 视频播放器
-        card1 = GlassCard("原视频预览")
-        self.video_player = VideoPlayer()
-        self.video_player.setMinimumHeight(220)
-        card1.layout().addWidget(self.video_player)
+        title = QLabel("视频合成与预览")
+        title.setObjectName("panelTitle")
+        layout.addWidget(title)
 
-        upload_row = QHBoxLayout()
-        upload_row.setSpacing(8)
-        self.upload_video_btn = GlassButton("选择视频文件")
-        upload_row.addWidget(self.upload_video_btn)
-        upload_row.addStretch()
-        card1.layout().addLayout(upload_row)
-        layout.addWidget(card1)
+        layout.addSpacing(4)
 
-        # 口型同步
-        card2 = GlassCard("口型同步 & 导出")
-        hint2 = QLabel("将原视频的口型与新配音自动匹配，生成最终视频")
-        hint2.setStyleSheet("font-size: 12px; color: #888; background: transparent; border: none;")
-        hint2.setWordWrap(True)
-        card2.layout().addWidget(hint2)
+        # 按钮行
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
 
-        from PySide6.QtWidgets import QProgressBar
-        self.lipsync_progress = QProgressBar()
-        self.lipsync_progress.setValue(0)
-        self.lipsync_progress.setFixedHeight(14)
-        card2.layout().addWidget(self.lipsync_progress)
+        self.upload_btn = QPushButton("上传原视频")
+        self.upload_btn.setStyleSheet(DEFAULT_BTN)
+        self.upload_btn.setFixedHeight(38)
+        self.upload_btn.setCursor(Qt.PointingHandCursor)
+        self.upload_btn.clicked.connect(self._on_select_video)
+        btn_row.addWidget(self.upload_btn)
 
-        self.lipsync_btn = GlassPrimaryButton("开始口型同步")
-        card2.layout().addWidget(self.lipsync_btn)
+        self.compose_btn = QPushButton("开始合成")
+        self.compose_btn.setStyleSheet(GREEN_BTN)
+        self.compose_btn.setFixedHeight(38)
+        self.compose_btn.setCursor(Qt.PointingHandCursor)
+        self.compose_btn.clicked.connect(self._on_compose)
+        btn_row.addWidget(self.compose_btn)
 
-        export_row = QHBoxLayout()
-        export_row.setSpacing(8)
-        self.preview_btn = GlassButton("预览成品")
-        self.preview_btn.setEnabled(False)
-        self.export_btn = GlassButton("导出视频")
-        self.export_btn.setEnabled(False)
-        export_row.addWidget(self.preview_btn)
-        export_row.addWidget(self.export_btn)
-        card2.layout().addLayout(export_row)
+        self.regenerate_btn = QPushButton("重新生成")
+        self.regenerate_btn.setStyleSheet(DEFAULT_BTN)
+        self.regenerate_btn.setFixedHeight(38)
+        self.regenerate_btn.setCursor(Qt.PointingHandCursor)
+        self.regenerate_btn.clicked.connect(self._on_compose)
+        self.regenerate_btn.setEnabled(False)
+        btn_row.addWidget(self.regenerate_btn)
 
-        layout.addWidget(card2)
-        layout.addStretch()
+        self.download_btn = QPushButton("下载到本地")
+        self.download_btn.setStyleSheet(DEFAULT_BTN)
+        self.download_btn.setFixedHeight(38)
+        self.download_btn.setCursor(Qt.PointingHandCursor)
+        self.download_btn.clicked.connect(self._on_download)
+        btn_row.addWidget(self.download_btn)
 
-        return col
+        layout.addLayout(btn_row)
 
-    # ------------------------------------------------------------------ extract text
+        # 合成进度条
+        self._compose_progress = QProgressBar()
+        self._compose_progress.setFixedHeight(6)
+        self._compose_progress.setRange(0, 0)  # 不确定模式
+        self._compose_progress.setTextVisible(False)
+        self._compose_progress.setStyleSheet("""
+            QProgressBar {
+                background-color: #e5e5e5;
+                border: none;
+                border-radius: 3px;
+            }
+            QProgressBar::chunk {
+                background-color: #22c55e;
+                border-radius: 3px;
+            }
+        """)
+        self._compose_progress.hide()
+        layout.addWidget(self._compose_progress)
+
+        # 原视频标签
+        video_label = QLabel("原视频")
+        video_label.setObjectName("sectionLabel")
+        layout.addWidget(video_label)
+
+        # 视频预览区
+        if HAS_VIDEO:
+            self._video_player = QMediaPlayer()
+            self._video_audio_output = QAudioOutput()
+            self._video_audio_output.setVolume(2.0)
+            self._video_player.setAudioOutput(self._video_audio_output)
+
+            self._video_widget = QVideoWidget()
+            self._video_widget.setMinimumHeight(200)
+            self._video_widget.setStyleSheet("background-color: #1a1a1a; border-radius: 10px;")
+            self._video_player.setVideoOutput(self._video_widget)
+
+            # 占位提示（视频加载后隐藏）
+            self._video_placeholder = QLabel("上传视频后自动播放", self._video_widget)
+            self._video_placeholder.setAlignment(Qt.AlignCenter)
+            self._video_placeholder.setStyleSheet("font-size: 13px; color: #666; background: transparent;")
+            self._video_placeholder.setGeometry(0, 0, 400, 100)
+            self._video_placeholder.move(
+                (self._video_widget.width() - self._video_placeholder.width()) // 2,
+                (self._video_widget.height() - self._video_placeholder.height()) // 2
+            )
+
+            self._video_player.positionChanged.connect(self._on_video_position_changed)
+            self._video_player.durationChanged.connect(self._on_video_duration_changed)
+            self._video_player.mediaStatusChanged.connect(self._on_video_media_status_changed)
+
+            layout.addWidget(self._video_widget, stretch=1)
+
+            # 视频控制栏
+            video_ctrl = QHBoxLayout()
+            video_ctrl.setSpacing(8)
+
+            self._video_play_btn = QPushButton("播放")
+            self._video_play_btn.setFixedHeight(32)
+            self._video_play_btn.setStyleSheet("""
+                QPushButton {
+                    background: #111111;
+                    color: white;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 4px 16px;
+                    font-size: 12px;
+                    font-weight: 500;
+                }
+                QPushButton:hover { background: #333; }
+            """)
+            self._video_play_btn.setCursor(Qt.PointingHandCursor)
+            self._video_play_btn.clicked.connect(self._on_video_play_pause)
+            video_ctrl.addWidget(self._video_play_btn)
+
+            self._video_slider = QSlider(Qt.Horizontal)
+            self._video_slider.setStyleSheet("""
+                QSlider::groove:horizontal {
+                    border: none;
+                    height: 4px;
+                    background: #e5e5e5;
+                    border-radius: 2px;
+                }
+                QSlider::handle:horizontal {
+                    background: #22c55e;
+                    border: none;
+                    width: 12px;
+                    height: 12px;
+                    margin: -4px 0;
+                    border-radius: 6px;
+                }
+                QSlider::sub-page:horizontal {
+                    background: #22c55e;
+                    border-radius: 2px;
+                }
+            """)
+            self._video_slider.sliderMoved.connect(self._on_video_slider_moved)
+            self._video_slider.sliderPressed.connect(self._on_video_slider_pressed)
+            self._video_slider.sliderReleased.connect(self._on_video_slider_released)
+            self._video_slider_pos = 0
+            video_ctrl.addWidget(self._video_slider, stretch=1)
+
+            self._video_time_label = QLabel("0:00 / 0:00")
+            self._video_time_label.setStyleSheet("font-size: 11px; color: #666; background: transparent;")
+            self._video_time_label.setFixedWidth(80)
+            video_ctrl.addWidget(self._video_time_label)
+
+            layout.addLayout(video_ctrl)
+        else:
+            placeholder = QLabel("视频播放需要 PySide6 QtMultimedia")
+            placeholder.setAlignment(Qt.AlignCenter)
+            placeholder.setStyleSheet("font-size: 13px; color: #999; padding: 40px;")
+            layout.addWidget(placeholder, stretch=1)
+
+        # 状态栏
+        self._status_label = QLabel("")
+        self._status_label.setObjectName("sectionLabel")
+        self._status_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self._status_label)
+
+        return panel
+
+    # ==================== 辅助方法 ====================
+
+    def _create_arrow(self) -> QLabel:
+        arrow = QLabel("↓")
+        arrow.setAlignment(Qt.AlignCenter)
+        arrow.setStyleSheet("color: #cccccc; font-size: 14px; background: transparent;")
+        return arrow
+
+    # ==================== 左栏事件 ====================
+
     def _on_extract(self):
         url = self.link_input.text().strip()
         if not url:
             self.recognized_text.setPlainText("请先粘贴视频链接")
             return
-
         self.extract_btn.setEnabled(False)
         self.extract_btn.setText("下载中...")
         self.recognized_text.setPlainText("正在下载音频...")
 
-        self._download_worker = DownloadWorker(url)
-        self._download_worker.finished.connect(self._on_download_done)
-        self._download_worker.error.connect(self._on_download_error)
-        self._download_worker.start()
+        self._worker = DownloadWorker(url)
+        self._worker.finished.connect(self._on_download_done)
+        self._worker.error.connect(self._on_error)
+        self._worker.start()
 
     def _on_download_done(self, audio_path: str):
-        self.recognized_text.setPlainText("音频下载完成，正在识别文字...")
-        self.extract_btn.setText("识别中...")
-
-        self._recognize_worker = RecognizeWorker(audio_path)
-        self._recognize_worker.finished.connect(self._on_recognize_done)
-        self._recognize_worker.error.connect(self._on_recognize_error)
-        self._recognize_worker.start()
-
-    def _on_download_error(self, msg: str):
-        self.extract_btn.setEnabled(True)
-        self.extract_btn.setText("提取文案")
-        self.recognized_text.setPlainText(f"下载失败: {msg}")
+        self.recognized_text.setPlainText("正在识别文字...")
+        self._worker = RecognizeWorker(audio_path)
+        self._worker.finished.connect(self._on_recognize_done)
+        self._worker.error.connect(self._on_error)
+        self._worker.start()
 
     def _on_recognize_done(self, text: str):
         self.extract_btn.setEnabled(True)
         self.extract_btn.setText("提取文案")
-        self.recognized_text.setPlainText(text if text else "未识别到文字内容")
+        self.recognized_text.setPlainText(text or "未识别到文字")
 
-    def _on_recognize_error(self, msg: str):
+        if text:
+            filename = f"recognized_{uuid.uuid4().hex[:8]}.txt"
+            filepath = os.path.join(TEXT_DIR, filename)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(text)
+            show_toast(self, f"识别完成，已保存到: {filepath}")
+
+    def _on_error(self, msg: str):
         self.extract_btn.setEnabled(True)
         self.extract_btn.setText("提取文案")
-        self.recognized_text.setPlainText(f"识别失败: {msg}")
+        self.recognized_text.setPlainText(f"错误: {msg}")
 
-    # ------------------------------------------------------------------ polish text
     def _on_polish(self):
         text = self.recognized_text.toPlainText().strip()
         if not text:
-            self.polished_text.setPlainText("请先识别文案")
+            show_toast(self, "请先提取文案")
             return
-
         self.polish_btn.setEnabled(False)
         self.polish_btn.setText("润色中...")
-        self.polished_text.setPlainText("正在润色口稿...")
-
         self._polish_worker = PolishWorker(text)
         self._polish_worker.finished.connect(self._on_polish_done)
         self._polish_worker.error.connect(self._on_polish_error)
@@ -327,53 +577,180 @@ class MainWindow(QMainWindow):
     def _on_polish_done(self, text: str):
         self.polish_btn.setEnabled(True)
         self.polish_btn.setText("润色")
-        self.polished_text.setPlainText(text if text else "润色失败")
+        self.polished_text.setPlainText(text or "润色未返回结果")
+        if text:
+            filename = f"polished_{uuid.uuid4().hex[:8]}.txt"
+            filepath = os.path.join(TEXT_DIR, filename)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(text)
+            show_toast(self, f"润色完成，已保存到: {filepath}")
+            if self._voice_clone_panel:
+                self._voice_clone_panel.set_input_text(text)
 
     def _on_polish_error(self, msg: str):
         self.polish_btn.setEnabled(True)
         self.polish_btn.setText("润色")
-        self.polished_text.setPlainText(f"润色失败: {msg}")
+        self.polished_text.setPlainText(f"润色错误: {msg}")
 
-    # ------------------------------------------------------------------ voice cloning callbacks
-    def _on_voice_ready(self, voice_info_path: str):
-        """声音特征提取完成"""
-        pass
+    def _on_clear(self):
+        self.link_input.clear()
+        self.recognized_text.clear()
+        self.polished_text.clear()
+
+    def _on_polished_text_changed(self):
+        """润色口稿内容变化时，同步到配音区域"""
+        text = self.polished_text.toPlainText().strip()
+        if text and self._voice_clone_panel:
+            self._voice_clone_panel.set_input_text(text)
+
+    # ==================== 中栏事件 ====================
 
     def _on_speech_generated(self, audio_path: str):
-        """语音生成完成"""
+        self._generated_audio_path = audio_path
+        show_toast(self, f"配音生成完成，已保存到: {audio_path}")
+
+    # ==================== 右栏事件 ====================
+
+    def _on_select_video(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择视频文件", "",
+            "视频文件 (*.mp4 *.mov *.avi);;所有文件 (*)"
+        )
+        if file_path:
+            self._original_video_path = file_path
+            name = os.path.basename(file_path)
+            self.upload_btn.setText(f"已选择: {name[:15]}...")
+            self._status_label.setText(f"原视频: {name}")
+
+            if HAS_VIDEO and self._video_player:
+                self._video_player.setSource(QUrl.fromLocalFile(file_path))
+                QTimer.singleShot(100, self._video_player.play)
+                if self._video_placeholder:
+                    self._video_placeholder.hide()
+
+            show_toast(self, f"已加载: {name}")
+
+    def _on_video_position_changed(self, position: int):
+        if not self._video_slider.isSliderDown():
+            self._video_slider.setValue(position)
+        self._update_video_time_label(position, self._video_player.duration())
+
+    def _on_video_duration_changed(self, duration: int):
+        self._video_slider.setRange(0, duration)
+        self._update_video_time_label(0, duration)
+
+    def _update_video_time_label(self, position: int, duration: int):
+        def format_time(ms):
+            s = ms // 1000
+            m = s // 60
+            s = s % 60
+            return f"{m}:{s:02d}"
+        self._video_time_label.setText(f"{format_time(position)} / {format_time(duration)}")
+
+    def _on_video_play_pause(self):
+        if not HAS_VIDEO or not self._video_player:
+            return
+        if self._video_player.playbackState() == QMediaPlayer.PlayingState:
+            self._video_player.pause()
+            self._video_play_btn.setText("播放")
+        else:
+            self._video_player.play()
+            self._video_play_btn.setText("暂停")
+
+    def _on_video_slider_pressed(self):
         pass
 
-    # ------------------------------------------------------------------ window drag
+    def _on_video_slider_released(self):
+        pos = self._video_slider.value()
+        self._video_player.setPosition(pos)
+
+    def _on_video_slider_moved(self, position: int):
+        pass
+
+    def _on_video_media_status_changed(self, status):
+        if status == QMediaPlayer.EndOfMedia:
+            self._video_play_btn.setText("播放")
+            self._video_slider.setValue(0)
+
+    def _on_compose(self):
+        if not self._original_video_path:
+            show_toast(self, "请先上传原视频")
+            return
+        if not self._generated_audio_path:
+            show_toast(self, "请先生成配音")
+            return
+
+        self.compose_btn.setEnabled(False)
+        self.compose_btn.setText("合成中...")
+        self.regenerate_btn.setEnabled(False)
+        self._status_label.setText("正在合成视频...")
+        self._compose_progress.show()
+
+        output_dir = os.path.join(DATA_DIR, "generated")
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, f"composed_{uuid.uuid4().hex[:8]}.mp4")
+
+        self._compose_worker = VideoComposerWorker(
+            self._original_video_path, self._generated_audio_path, output_path
+        )
+        self._compose_worker.finished.connect(self._on_compose_done)
+        self._compose_worker.error.connect(self._on_compose_error)
+        self._compose_worker.start()
+
+    def _on_compose_done(self, path: str):
+        self.compose_btn.setEnabled(True)
+        self.compose_btn.setText("开始合成")
+        self.regenerate_btn.setEnabled(True)
+        self._compose_progress.hide()
+        self._composed_video_path = path
+        name = os.path.basename(path)
+        self._status_label.setText(f"合成完成: {name}")
+
+        if HAS_VIDEO and self._video_player:
+            self._video_player.setSource(QUrl.fromLocalFile(path))
+            QTimer.singleShot(100, self._video_player.play)
+
+        show_toast(self, f"视频合成完成，已保存到: {path}")
+
+    def _on_compose_error(self, msg: str):
+        self.compose_btn.setEnabled(True)
+        self.compose_btn.setText("开始合成")
+        self.regenerate_btn.setEnabled(False)
+        self._compose_progress.hide()
+        self._status_label.setText(f"合成失败: {msg}")
+        show_toast(self, f"合成失败: {msg}")
+
+    def _on_download(self):
+        source = self._composed_video_path or self._original_video_path
+        if not source:
+            show_toast(self, "没有可下载的视频")
+            return
+
+        default_name = os.path.basename(source)
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "下载视频", default_name,
+            "MP4 文件 (*.mp4);;所有文件 (*)"
+        )
+        if file_path:
+            try:
+                shutil.copy2(source, file_path)
+                show_toast(self, f"已保存到: {os.path.basename(file_path)}")
+            except Exception as e:
+                show_toast(self, f"保存失败: {e}")
+
+    # ==================== 窗口拖拽 ====================
+
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and event.position().y() < 48:
+        if event.button() == Qt.LeftButton and event.position().y() < 44:
             self._is_dragging = True
             self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
 
     def mouseMoveEvent(self, event):
-        if self._is_dragging and self._drag_pos is not None:
+        if self._is_dragging and self._drag_pos:
             self.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
 
     def mouseReleaseEvent(self, event):
         self._is_dragging = False
         self._drag_pos = None
-
-    # ------------------------------------------------------------------ keyboard shortcut
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Slash and event.modifiers() == Qt.ControlModifier:
-            self._reset_all()
-            return
-        super().keyPressEvent(event)
-
-    def _reset_all(self):
-        self.link_input.clear()
-        self.recognized_text.setPlainText("")
-        self.polished_text.setPlainText("")
-        self.extract_btn.setEnabled(True)
-        self.extract_btn.setText("提取文案")
-        self.polish_btn.setEnabled(True)
-        self.polish_btn.setText("润色")
-        self.lipsync_progress.setValue(0)
-        self.preview_btn.setEnabled(False)
-        self.export_btn.setEnabled(False)

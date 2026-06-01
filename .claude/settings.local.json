@@ -8,7 +8,11 @@
       "Bash(python -c ' *)",
       "Bash(cmd.exe //c \"d:\\\\\\\\zdh-dsp\\\\\\\\ollama-setup.exe\")",
       "WebSearch",
-      "Bash(tasklist)"
+      "Bash(tasklist)",
+      "Bash(npx skills *)",
+      "Bash(echo \"Exit: $?\")",
+      "Bash(python -c \"from ui import MainWindow; print\\('OK'\\)\")",
+      "Read(//d/Videos/**)"
     ]
   }
 }
