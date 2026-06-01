@@ -33,5 +33,28 @@ AUDIO_SAMPLE_RATE = 24000
 AUDIO_CHANNELS = 1
 AUDIO_FORMAT = "wav"
 
-# FFmpeg 路径
-FFMPEG_PATH = r"C:\Users\Administrator\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\imageio_ffmpeg\binaries\ffmpeg-win-x86_64-v7.1.exe"
+# FFmpeg 路径（优先从环境变量读取，否则自动发现）
+def _find_ffmpeg():
+    """自动查找 ffmpeg 路径"""
+    # 1. 从环境变量读取
+    ffmpeg_path = os.environ.get("FFMPEG_PATH", "")
+    if ffmpeg_path and os.path.exists(ffmpeg_path):
+        return ffmpeg_path
+
+    # 2. 尝试从 imageio_ffmpeg 获取
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except (ImportError, Exception):
+        pass
+
+    # 3. 尝试从系统 PATH 查找
+    import shutil
+    ffmpeg_in_path = shutil.which("ffmpeg")
+    if ffmpeg_in_path:
+        return ffmpeg_in_path
+
+    # 4. 返回默认路径（可能不存在）
+    return ""
+
+FFMPEG_PATH = _find_ffmpeg()
