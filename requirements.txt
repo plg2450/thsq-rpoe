@@ -29,3 +29,6 @@ python-crfsuite
 Babel
 dateparser
 pydub
+face-alignment
+pyyaml
+opencv-python

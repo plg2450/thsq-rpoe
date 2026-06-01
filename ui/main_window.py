@@ -14,6 +14,7 @@ from PySide6.QtGui import QFont
 from .styles import MAIN_STYLE
 from .toast import show_toast
 from core import Downloader, Recognizer
+from core.lip_sync import LipSyncer
 from config import DATA_DIR, FFMPEG_PATH
 
 # 文本保存目录
@@ -133,7 +134,7 @@ class PolishWorker(QThread):
 
 
 class VideoComposerWorker(QThread):
-    """用 ffmpeg 替换视频音轨（占位，未来接唇形同步模型）"""
+    """使用 Wav2Lip 唇形同步（模型不可用时回退到音轨替换）"""
     finished = Signal(str)
     error = Signal(str)
 
@@ -145,23 +146,8 @@ class VideoComposerWorker(QThread):
 
     def run(self):
         try:
-            cmd = [
-                FFMPEG_PATH, "-y",
-                "-i", self.video_path,
-                "-i", self.audio_path,
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-map", "0:v:0",
-                "-map", "1:a:0",
-                self.output_path
-            ]
-            result = subprocess.run(
-                cmd, capture_output=True, text=True,
-                encoding='utf-8', errors='replace'
-            )
-            if not os.path.exists(self.output_path) or os.path.getsize(self.output_path) < 100:
-                error_msg = result.stderr[-500:] if result.stderr else "未知错误"
-                raise Exception(f"合成失败: {error_msg}")
+            lip_syncer = LipSyncer()
+            lip_syncer.sync_with_fallback(self.video_path, self.audio_path, self.output_path)
             self.finished.emit(self.output_path)
         except Exception as e:
             self.error.emit(str(e))

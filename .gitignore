@@ -10,6 +10,9 @@ __pycache__/
 # 数据目录
 data/
 models/
+!models/Wav2Lip/
+models/Wav2Lip/.git/
+models/Wav2Lip/checkpoints/*.pth
 
 # IDE
 .vscode/
