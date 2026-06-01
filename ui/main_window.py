@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QFrame, QPushButton, QTextEdit, QLineEdit,
     QFileDialog, QScrollArea, QSizePolicy, QProgressBar,
-    QSlider
+    QSlider, QCheckBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, QUrl, QTimer
 from PySide6.QtGui import QFont
@@ -134,20 +134,26 @@ class PolishWorker(QThread):
 
 
 class VideoComposerWorker(QThread):
-    """使用 Wav2Lip 唇形同步（模型不可用时回退到音轨替换）"""
+    """视频合成：唇形同步或音轨替换"""
     finished = Signal(str)
     error = Signal(str)
 
-    def __init__(self, video_path: str, audio_path: str, output_path: str):
+    def __init__(self, video_path: str, audio_path: str, output_path: str, use_lipsync: bool = False):
         super().__init__()
         self.video_path = video_path
         self.audio_path = audio_path
         self.output_path = output_path
+        self.use_lipsync = use_lipsync
 
     def run(self):
         try:
-            lip_syncer = LipSyncer()
-            lip_syncer.sync_with_fallback(self.video_path, self.audio_path, self.output_path)
+            if self.use_lipsync:
+                lip_syncer = LipSyncer()
+                lip_syncer.sync_with_fallback(self.video_path, self.audio_path, self.output_path)
+            else:
+                # 直接音轨替换
+                lip_syncer = LipSyncer()
+                lip_syncer._replace_audio(self.video_path, self.audio_path, self.output_path)
             self.finished.emit(self.output_path)
         except Exception as e:
             self.error.emit(str(e))
@@ -378,6 +384,33 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self.download_btn)
 
         layout.addLayout(btn_row)
+
+        # 唇形同步选项
+        lipsync_row = QHBoxLayout()
+        lipsync_row.setSpacing(8)
+
+        self._lipsync_checkbox = QCheckBox("启用唇形同步（需要较强GPU，处理较慢）")
+        self._lipsync_checkbox.setStyleSheet("""
+            QCheckBox {
+                font-size: 12px;
+                color: #666;
+                spacing: 6px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border: 1px solid #ccc;
+                border-radius: 3px;
+                background: white;
+            }
+            QCheckBox::indicator:checked {
+                background: #22c55e;
+                border-color: #22c55e;
+            }
+        """)
+        lipsync_row.addWidget(self._lipsync_checkbox)
+        lipsync_row.addStretch()
+        layout.addLayout(lipsync_row)
 
         # 合成进度条
         self._compose_progress = QProgressBar()
@@ -676,8 +709,10 @@ class MainWindow(QMainWindow):
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, f"composed_{uuid.uuid4().hex[:8]}.mp4")
 
+        use_lipsync = self._lipsync_checkbox.isChecked()
+
         self._compose_worker = VideoComposerWorker(
-            self._original_video_path, self._generated_audio_path, output_path
+            self._original_video_path, self._generated_audio_path, output_path, use_lipsync
         )
         self._compose_worker.finished.connect(self._on_compose_done)
         self._compose_worker.error.connect(self._on_compose_error)
