@@ -44,7 +44,6 @@ class LipSyncer:
             "--source_image", video_path,
             "--result_dir", os.path.dirname(output_path),
             "--size", "256",
-            "--enhancer", "gfpgan",  # 使用人脸增强
             "--still",  # 静态模式，减少头部运动
             "--preprocess", "crop",  # 自动裁剪人脸
         ]
