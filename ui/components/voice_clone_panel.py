@@ -716,7 +716,7 @@ class VoiceClonePanel(QWidget):
                 try:
                     if os.path.exists(self._sample_audio_path):
                         os.remove(self._sample_audio_path)
-                except:
+                except OSError:
                     pass
 
             temp_path = os.path.join(temp_dir, f'temp_sample_{uuid.uuid4().hex[:8]}.wav')
@@ -730,7 +730,7 @@ class VoiceClonePanel(QWidget):
                 try:
                     with wave.open(temp_path, 'rb') as wav:
                         duration = wav.getnframes() / wav.getframerate()
-                except:
+                except Exception:
                     pass
 
             mins = int(duration // 60)

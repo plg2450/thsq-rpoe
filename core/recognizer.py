@@ -16,24 +16,34 @@ class Recognizer:
         )
 
     def transcribe(self, audio_path: str) -> str:
-        if audio_path.endswith('.mp4'):
-            audio_path = self._extract_audio(audio_path)
+        temp_audio = None
+        try:
+            if audio_path.endswith('.mp4'):
+                temp_audio = self._extract_audio(audio_path)
+                audio_path = temp_audio
 
-        import soundfile as sf
-        import numpy as np
-        audio, sr = sf.read(audio_path)
+            import soundfile as sf
+            import numpy as np
+            audio, sr = sf.read(audio_path)
 
-        if len(audio.shape) > 1:
-            audio = audio.mean(axis=1)
+            if len(audio.shape) > 1:
+                audio = audio.mean(axis=1)
 
-        if sr != 16000:
-            import scipy.signal
-            audio = scipy.signal.resample(audio, int(len(audio) * 16000 / sr))
+            if sr != 16000:
+                import scipy.signal
+                audio = scipy.signal.resample(audio, int(len(audio) * 16000 / sr))
 
-        audio = audio.astype(np.float32)
-        result = self.model.generate(input=audio)
-        text = result[0]["text"] if result else ""
-        return text
+            audio = audio.astype(np.float32)
+            result = self.model.generate(input=audio)
+            text = result[0]["text"] if result else ""
+            return text
+        finally:
+            # 清理临时音频文件
+            if temp_audio and os.path.exists(temp_audio):
+                try:
+                    os.remove(temp_audio)
+                except OSError:
+                    pass
 
     def _extract_audio(self, video_path: str) -> str:
         audio_path = video_path.rsplit('.', 1)[0] + '_audio.wav'

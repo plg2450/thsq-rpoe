@@ -1,7 +1,6 @@
 import os
 import re
 import json
-import subprocess
 import requests
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
@@ -42,60 +41,60 @@ class Downloader:
                     '--no-sandbox',
                 ]
             )
-            context = browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            )
-            page = context.new_page()
-            stealth = Stealth()
-            stealth.apply_stealth_sync(page)
+            try:
+                context = browser.new_context(
+                    viewport={"width": 1920, "height": 1080},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                )
+                page = context.new_page()
+                stealth = Stealth()
+                stealth.apply_stealth_sync(page)
 
-            # 收集所有网络请求的视频URL
-            all_video_urls = []
+                # 收集所有网络请求的视频URL
+                all_video_urls = []
 
-            def handle_response(response):
-                try:
-                    ct = response.headers.get("content-type", "")
-                    url_str = response.url
-                    # 只收集可能是视频的URL
-                    if any(ext in url_str.lower() for ext in ['.mp4', 'video', 'play']):
-                        cl = response.headers.get("content-length", "0")
-                        size = int(cl) if cl.isdigit() else 0
-                        all_video_urls.append({
-                            "url": url_str,
-                            "type": ct,
-                            "size": size
-                        })
-                except:
-                    pass
+                def handle_response(response):
+                    try:
+                        ct = response.headers.get("content-type", "")
+                        url_str = response.url
+                        # 只收集可能是视频的URL
+                        if any(ext in url_str.lower() for ext in ['.mp4', 'video', 'play']):
+                            cl = response.headers.get("content-length", "0")
+                            size = int(cl) if cl.isdigit() else 0
+                            all_video_urls.append({
+                                "url": url_str,
+                                "type": ct,
+                                "size": size
+                            })
+                    except Exception:
+                        pass
 
-            page.on("response", handle_response)
+                page.on("response", handle_response)
 
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(10000)
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(10000)
 
-            page_url = page.url
-            video_id_match = re.search(r'/video/(\d+)', page_url)
-            if not video_id_match:
-                page.wait_for_timeout(3000)
-                video_id_match = re.search(r'/video/(\d+)', page.url)
+                page_url = page.url
+                video_id_match = re.search(r'/video/(\d+)', page_url)
+                if not video_id_match:
+                    page.wait_for_timeout(3000)
+                    video_id_match = re.search(r'/video/(\d+)', page.url)
 
-            if not video_id_match:
+                if not video_id_match:
+                    raise ValueError("无法获取视频ID，请确保链接是抖音视频分享链接")
+
+                video_id = video_id_match.group(1)
+
+                # 检查是否已下载过
+                output_path = os.path.join(self.output_dir, f"{video_id}.mp4")
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 10000:
+                    if self._has_audio_stream(output_path):
+                        return output_path
+
+                # 从页面JSON数据中提取视频信息
+                html = page.content()
+            finally:
                 browser.close()
-                raise ValueError("无法获取视频ID，请确保链接是抖音视频分享链接")
-
-            video_id = video_id_match.group(1)
-
-            # 检查是否已下载过
-            output_path = os.path.join(self.output_dir, f"{video_id}.mp4")
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 10000:
-                if self._has_audio_stream(output_path):
-                    browser.close()
-                    return output_path
-
-            # 从页面JSON数据中提取视频信息
-            html = page.content()
-            browser.close()
 
         # 方法1: 从页面JSON数据提取完整视频URL
         video_url = self._extract_from_json(html, video_id)

@@ -548,17 +548,17 @@ class MainWindow(QMainWindow):
         self.extract_btn.setText("下载中...")
         self.recognized_text.setPlainText("正在下载音频...")
 
-        self._worker = DownloadWorker(url)
-        self._worker.finished.connect(self._on_download_done)
-        self._worker.error.connect(self._on_error)
-        self._worker.start()
+        self._download_worker = DownloadWorker(url)
+        self._download_worker.finished.connect(self._on_download_done)
+        self._download_worker.error.connect(self._on_error)
+        self._download_worker.start()
 
     def _on_download_done(self, audio_path: str):
         self.recognized_text.setPlainText("正在识别文字...")
-        self._worker = RecognizeWorker(audio_path)
-        self._worker.finished.connect(self._on_recognize_done)
-        self._worker.error.connect(self._on_error)
-        self._worker.start()
+        self._recognize_worker = RecognizeWorker(audio_path)
+        self._recognize_worker.finished.connect(self._on_recognize_done)
+        self._recognize_worker.error.connect(self._on_error)
+        self._recognize_worker.start()
 
     def _on_recognize_done(self, text: str):
         self.extract_btn.setEnabled(True)

@@ -244,7 +244,7 @@ class AudioPlayerWidget(QWidget):
         try:
             with wave.open(audio_path, 'rb') as wav:
                 self._total_time = wav.getnframes() / wav.getframerate()
-        except:
+        except Exception:
             self._total_time = 0.0
 
         self.waveform.load_audio(audio_path)
